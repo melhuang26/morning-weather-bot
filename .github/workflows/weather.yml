@@ -26,4 +26,5 @@ jobs:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          CALENDAR_ICS_URL: ${{ secrets.CALENDAR_ICS_URL }}
         run: python weather.py
