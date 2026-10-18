@@ -1,7 +1,8 @@
 import os
 import requests
 import smtplib
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 from icalendar import Calendar
 
@@ -12,6 +13,7 @@ WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY")
 CALENDAR_ICS_URL = os.environ.get("CALENDAR_ICS_URL")
 
 CITY = "Taipei"
+TIMEZONE = ZoneInfo("Asia/Taipei")
 
 def get_calendar_events():
     if not CALENDAR_ICS_URL:
@@ -23,7 +25,8 @@ def get_calendar_events():
             return "📅 Calendar: Could not fetch calendar events."
         
         cal = Calendar.from_ical(response.content)
-        today = datetime.now().date()
+        # Get today's date specifically in Taiwan Timezone
+        today = datetime.now(TIMEZONE).date()
         todays_events = []
 
         for component in cal.walk():
@@ -33,10 +36,16 @@ def get_calendar_events():
                 
                 if dtstart:
                     start_dt = dtstart.dt
-                    # Handle all-day events vs timed events
+                    # Handle datetime with time vs date-only (all day)
                     if isinstance(start_dt, datetime):
-                        event_date = start_dt.date()
-                        time_str = start_dt.strftime("%H:%M")
+                        # Convert event time to Taiwan timezone if timezone is attached
+                        if start_dt.tzinfo is not None:
+                            local_dt = start_dt.astimezone(TIMEZONE)
+                        else:
+                            local_dt = start_dt.replace(tzinfo=TIMEZONE)
+                        
+                        event_date = local_dt.date()
+                        time_str = local_dt.strftime("%H:%M")
                     else:
                         event_date = start_dt
                         time_str = "All-day"
