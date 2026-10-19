@@ -17,15 +17,14 @@ TIMEZONE = ZoneInfo("Asia/Taipei")
 
 def get_calendar_events():
     if not CALENDAR_ICS_URL:
-        return "📅 Calendar: No calendar URL configured."
+        return ["No calendar URL configured."]
     
     try:
         response = requests.get(CALENDAR_ICS_URL)
         if response.status_code != 200:
-            return "📅 Calendar: Could not fetch calendar events."
+            return ["Could not fetch calendar events."]
         
         cal = Calendar.from_ical(response.content)
-        # Get today's date specifically in Taiwan Timezone
         today = datetime.now(TIMEZONE).date()
         todays_events = []
 
@@ -36,9 +35,7 @@ def get_calendar_events():
                 
                 if dtstart:
                     start_dt = dtstart.dt
-                    # Handle datetime with time vs date-only (all day)
                     if isinstance(start_dt, datetime):
-                        # Convert event time to Taiwan timezone if timezone is attached
                         if start_dt.tzinfo is not None:
                             local_dt = start_dt.astimezone(TIMEZONE)
                         else:
@@ -51,14 +48,14 @@ def get_calendar_events():
                         time_str = "All-day"
                     
                     if event_date == today:
-                        todays_events.append(f"• {time_str} - {summary}")
+                        todays_events.append(f"<b>{time_str}</b> — {summary}")
 
         if not todays_events:
-            return "📅 Today's Schedule: No events scheduled for today! Enjoy your free time."
+            return ["No events scheduled for today! Enjoy your free time."]
         
-        return "📅 Today's Schedule:\n" + "\n".join(todays_events)
+        return todays_events
     except Exception as e:
-        return f"📅 Calendar Error: Could not parse events ({str(e)})"
+        return [f"Calendar Error: Could not parse events ({str(e)})"]
 
 def get_aqi_info(lat, lon):
     aqi_url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}"
@@ -71,22 +68,22 @@ def get_aqi_info(lat, lon):
     return "N/A"
 
 def get_clothing_and_umbrella_tips(temp, description):
-    tips = []
     rain_keywords = ["rain", "drizzle", "thunderstorm", "shower"]
     if any(keyword in description.lower() for keyword in rain_keywords):
-        tips.append("☔ Umbrella Alert: Rain expected, don't forget an umbrella!")
+        umbrella_tip = "☔ <b>Umbrella Alert:</b> Rain expected, don't forget to take an umbrella!"
     else:
-        tips.append("☀️ No rain expected—leave the umbrella at home.")
+        umbrella_tip = "☀️ <b>Umbrella Alert:</b> No rain expected—leave the umbrella at home."
         
     if temp < 18:
-        tips.append("🧥 Clothing Tip: It's chilly today! Wear a heavy coat or warm sweater.")
+        clothing_tip = "🧥 <b>Clothing Tip:</b> Chilly today! Wear a heavy coat or warm sweater."
     elif 18 <= temp <= 25:
-        tips.append("👕 Clothing Tip: Moderate weather! A long-sleeve shirt or light layer is perfect.")
+        clothing_tip = "👕 <b>Clothing Tip:</b> Moderate weather! A long-sleeve shirt or light layer is perfect."
     else:
-        tips.append("👕 Clothing Tip: Warm weather! Wear light, breathable clothes.")
-    return "\n".join(tips)
+        clothing_tip = "👕 <b>Clothing Tip:</b> Warm weather! Wear light, breathable clothes."
+        
+    return umbrella_tip, clothing_tip
 
-def get_weather():
+def get_weather_data():
     url = f"https://api.openweathermap.org/data/2.5/weather?q={CITY}&appid={WEATHER_API_KEY}&units=metric"
     response = requests.get(url)
     if response.status_code != 200:
@@ -101,35 +98,112 @@ def get_weather():
     lat = data["coord"]["lat"]
     lon = data["coord"]["lon"]
     aqi_status = get_aqi_info(lat, lon)
-    tips = get_clothing_and_umbrella_tips(temp, description)
-    schedule_text = get_calendar_events()
+    umbrella_tip, clothing_tip = get_clothing_and_umbrella_tips(temp, description)
+    schedule_events = get_calendar_events()
     
-    forecast_text = (
-        f"Good morning! Here is your daily briefing for {CITY}:\n\n"
-        f"🌡️ Temperature: {temp}°C (Feels like: {feels_like}°C)\n"
-        f"☁️ Condition: {description.capitalize()}\n"
-        f"💧 Humidity: {humidity}%\n"
-        f"🍃 Air Quality (AQI): {aqi_status}\n\n"
+    date_str = datetime.now(TIMEZONE).strftime("%A, %B %d, %Y")
+    
+    return {
+        "city": CITY,
+        "date_str": date_str,
+        "temp": temp,
+        "feels_like": feels_like,
+        "description": description.capitalize(),
+        "humidity": humidity,
+        "aqi_status": aqi_status,
+        "umbrella_tip": umbrella_tip,
+        "clothing_tip": clothing_tip,
+        "schedule_events": schedule_events
+    }
+
+def send_email(data):
+    msg = EmailMessage()
+    msg["Subject"] = f"☀️ Morning Briefing & Schedule for {data['city']} ({data['date_str']})"
+    msg["From"] = EMAIL_ADDRESS
+    msg["To"] = EMAIL_ADDRESS
+
+    # Plain text fallback version
+    schedule_text = "\n".join([f"• {e.replace('<b>', '').replace('</b>', '')}" for e in data['schedule_events']])
+    plain_text = (
+        f"Good morning! Here is your daily briefing for {data['city']} ({data['date_str']}):\n\n"
+        f"Temperature: {data['temp']}°C (Feels like: {data['feels_like']}°C)\n"
+        f"Condition: {data['description']}\n"
+        f"Humidity: {data['humidity']}%\n"
+        f"Air Quality (AQI): {data['aqi_status']}\n\n"
         f"--- Daily Tips ---\n"
-        f"{tips}\n\n"
+        f"- {data['umbrella_tip'].replace('<b>','').replace('</b>','')}\n"
+        f"- {data['clothing_tip'].replace('<b>','').replace('</b>','')}\n\n"
         f"--- Schedule ---\n"
         f"{schedule_text}\n\n"
         f"Have a wonderful day!"
     )
-    return forecast_text
+    msg.set_content(plain_text)
 
-def send_email(content):
-    msg = EmailMessage()
-    msg.set_content(content)
-    msg["Subject"] = f"☀️ Morning Briefing & Schedule for {CITY}"
-    msg["From"] = EMAIL_ADDRESS
-    msg["To"] = EMAIL_ADDRESS
+    # Rich HTML version
+    schedule_html_items = "".join([f"<li style='margin-bottom: 8px;'>{event}</li>" for event in data['schedule_events']])
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f7; color: #333333; margin: 0; padding: 20px; }}
+            .container {{ max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
+            .header {{ background: linear-gradient(135deg, #4f46e5, #3b82f6); color: #ffffff; padding: 28px 24px; text-align: center; }}
+            .content {{ padding: 24px; }}
+            .card {{ background: #f8fafc; border-left: 4px solid #3b82f6; padding: 16px; margin-bottom: 16px; border-radius: 6px; }}
+            .tips-card {{ background: #fffbeb; border-left: 4px solid #f59e0b; padding: 16px; margin-bottom: 16px; border-radius: 6px; }}
+            .schedule-card {{ background: #f0fdf4; border-left: 4px solid #22c55e; padding: 16px; margin-bottom: 16px; border-radius: 6px; }}
+            h2 {{ margin-top: 0; font-size: 16px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px; }}
+            ul {{ margin: 0; padding-left: 20px; }}
+            .footer {{ text-align: center; font-size: 12px; color: #94a3b8; padding: 16px; border-top: 1px solid #e2e8f0; background: #fafafa; }}
+            p {{ margin: 6px 0; font-size: 14px; line-height: 1.5; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1 style="margin:0; font-size: 24px; font-weight: 700;">☀️ Morning Briefing</h1>
+                <p style="margin: 6px 0 0 0; font-size: 14px; opacity: 0.9;">{data['city']} • {data['date_str']}</p>
+            </div>
+            <div class="content">
+                <div class="card">
+                    <h2>🌡️ Weather & Environment</h2>
+                    <p><b>Temperature:</b> {data['temp']}°C (Feels like: {data['feels_like']}°C)</p>
+                    <p><b>Condition:</b> {data['description']}</p>
+                    <p><b>Humidity:</b> {data['humidity']}%</p>
+                    <p><b>Air Quality (AQI):</b> {data['aqi_status']}</p>
+                </div>
+                
+                <div class="tips-card">
+                    <h2>💡 Daily Tips</h2>
+                    <p>{data['umbrella_tip']}</p>
+                    <p>{data['clothing_tip']}</p>
+                </div>
+
+                <div class="schedule-card">
+                    <h2>📅 Today's Schedule</h2>
+                    <ul style="margin: 8px 0 0 0; padding-left: 18px;">
+                        {schedule_html_items}
+                    </ul>
+                </div>
+            </div>
+            <div class="footer">
+                <p>Automated Daily Briefing Bot • Powered by GitHub Actions 🤖</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    msg.add_alternative(html_content, subtype='html')
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.send_message(msg)
-    print("Weather and schedule email sent successfully!")
+    print("HTML weather and schedule email sent successfully!")
 
 if __name__ == "__main__":
-    forecast = get_weather()
-    send_email(forecast)
+    weather_data = get_weather_data()
+    send_email(weather_data)
