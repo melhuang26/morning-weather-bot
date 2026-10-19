@@ -67,50 +67,86 @@ def get_aqi_info(lat, lon):
         return aqi_descriptions.get(aqi_level, "Unknown")
     return "N/A"
 
-def get_clothing_and_umbrella_tips(temp, description):
+def get_clothing_and_umbrella_tips(periods):
+    # Check if any period mentions rain
+    all_desc = " ".join([p["description"].lower() for p in periods.values() if p])
+    max_temp = max([p["temp"] for p in periods.values() if p] or [20])
+    min_temp = min([p["temp"] for p in periods.values() if p] or [20])
+    
     rain_keywords = ["rain", "drizzle", "thunderstorm", "shower"]
-    if any(keyword in description.lower() for keyword in rain_keywords):
-        umbrella_tip = "☔ <b>Umbrella Alert:</b> Rain expected, don't forget to take an umbrella!"
+    if any(keyword in all_desc for keyword in rain_keywords):
+        umbrella_tip = "☔ <b>Umbrella Alert:</b> Rain expected at some point today—take an umbrella!"
     else:
         umbrella_tip = "☀️ <b>Umbrella Alert:</b> No rain expected—leave the umbrella at home."
         
-    if temp < 18:
-        clothing_tip = "🧥 <b>Clothing Tip:</b> Chilly today! Wear a heavy coat or warm sweater."
-    elif 18 <= temp <= 25:
-        clothing_tip = "👕 <b>Clothing Tip:</b> Moderate weather! A long-sleeve shirt or light layer is perfect."
+    if min_temp < 18:
+        clothing_tip = "🧥 <b>Clothing Tip:</b> Chilly parts of the day! Bring a jacket or warm layer."
+    elif max_temp > 28:
+        clothing_tip = "👕 <b>Clothing Tip:</b> Warm during the day! Wear light, breathable clothes."
     else:
-        clothing_tip = "👕 <b>Clothing Tip:</b> Warm weather! Wear light, breathable clothes."
+        clothing_tip = "👕 <b>Clothing Tip:</b> Comfortable temperatures overall today."
         
     return umbrella_tip, clothing_tip
 
 def get_weather_data():
-    url = f"https://api.openweathermap.org/data/2.5/weather?q={CITY}&appid={WEATHER_API_KEY}&units=metric"
+    # Use the 3-hour forecast endpoint
+    url = f"https://api.openweathermap.org/data/2.5/forecast?q={CITY}&appid={WEATHER_API_KEY}&units=metric"
     response = requests.get(url)
     if response.status_code != 200:
         raise Exception(f"Failed to fetch weather data: {response.text}")
     
     data = response.json()
-    temp = data["main"]["temp"]
-    feels_like = data["main"]["feels_like"]
-    description = data["weather"][0]["description"]
-    humidity = data["main"]["humidity"]
+    today = datetime.now(TIMEZONE).date()
     
-    lat = data["coord"]["lat"]
-    lon = data["coord"]["lon"]
-    aqi_status = get_aqi_info(lat, lon)
-    umbrella_tip, clothing_tip = get_clothing_and_umbrella_tips(temp, description)
+    # We need lat/lon from the city data for AQI
+    city_info = data.get("city", {})
+    coord = city_info.get("coord", {"lat": 25.0330, "lon": 121.5654})
+    aqi_status = get_aqi_info(coord["lat"], coord["lon"])
+
+    # Filter forecasts for today and categorize into Morning, Afternoon, Night
+    periods = {"Morning": None, "Afternoon": None, "Night": None}
+    
+    for item in data.get("list", []):
+        dt_utc = datetime.fromtimestamp(item["dt"], tz=timezone.utc if 'timezone' in globals() else None)
+        # Convert UTC timestamp to Taiwan time
+        dt_local = datetime.fromtimestamp(item["dt"], tz=ZoneInfo("UTC")).astimezone(TIMEZONE)
+        
+        if dt_local.date() == today:
+            hour = dt_local.hour
+            weather_info = {
+                "temp": item["main"]["temp"],
+                "feels_like": item["main"]["feels_like"],
+                "description": item["weather"][0]["description"].capitalize(),
+                "humidity": item["main"]["humidity"]
+            }
+            
+            # Map hours to blocks (Morning ~09:00, Afternoon ~15:00, Night ~21:00)
+            if 6 <= hour <= 11 and periods["Morning"] is None:
+                periods["Morning"] = weather_info
+            elif 12 <= hour <= 17 and periods["Afternoon"] is None:
+                periods["Afternoon"] = weather_info
+            elif 18 <= hour <= 23 and periods["Night"] is None:
+                periods["Night"] = weather_info
+
+    # Fallback if specific hour slots weren't caught exact
+    available_items = [item for item in data.get("list", []) if datetime.fromtimestamp(item["dt"], tz=ZoneInfo("UTC")).astimezone(TIMEZONE).date() == today]
+    if not periods["Morning"] and available_items:
+        periods["Morning"] = {"temp": available_items[0]["main"]["temp"], "feels_like": available_items[0]["main"]["feels_like"], "description": available_items[0]["weather"][0]["description"].capitalize(), "humidity": available_items[0]["main"]["humidity"]}
+    if not periods["Afternoon"] and len(available_items) > 3:
+        mid_idx = len(available_items) // 2
+        periods["Afternoon"] = {"temp": available_items[mid_idx]["main"]["temp"], "feels_like": available_items[mid_idx]["main"]["feels_like"], "description": available_items[mid_idx]["weather"][0]["description"].capitalize(), "humidity": available_items[mid_idx]["main"]["humidity"]}
+    if not periods["Night"] and len(available_items) > 6:
+        periods["Night"] = {"temp": available_items[-1]["main"]["temp"], "feels_like": available_items[-1]["main"]["feels_like"], "description": available_items[-1]["weather"][0]["description"].capitalize(), "humidity": available_items[-1]["main"]["humidity"]}
+
+    umbrella_tip, clothing_tip = get_clothing_and_umbrella_tips(periods)
     schedule_events = get_calendar_events()
-    
     date_str = datetime.now(TIMEZONE).strftime("%A, %B %d, %Y")
     
     return {
         "city": CITY,
         "date_str": date_str,
-        "temp": temp,
-        "feels_like": feels_like,
-        "description": description.capitalize(),
-        "humidity": humidity,
         "aqi_status": aqi_status,
+        "periods": periods,
         "umbrella_tip": umbrella_tip,
         "clothing_tip": clothing_tip,
         "schedule_events": schedule_events
@@ -122,24 +158,22 @@ def send_email(data):
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = EMAIL_ADDRESS
 
-    # Plain text fallback version
-    schedule_text = "\n".join([f"• {e.replace('<b>', '').replace('</b>', '')}" for e in data['schedule_events']])
-    plain_text = (
-        f"Good morning! Here is your daily briefing for {data['city']} ({data['date_str']}):\n\n"
-        f"Temperature: {data['temp']}°C (Feels like: {data['feels_like']}°C)\n"
-        f"Condition: {data['description']}\n"
-        f"Humidity: {data['humidity']}%\n"
-        f"Air Quality (AQI): {data['aqi_status']}\n\n"
-        f"--- Daily Tips ---\n"
-        f"- {data['umbrella_tip'].replace('<b>','').replace('</b>','')}\n"
-        f"- {data['clothing_tip'].replace('<b>','').replace('</b>','')}\n\n"
-        f"--- Schedule ---\n"
-        f"{schedule_text}\n\n"
-        f"Have a wonderful day!"
-    )
-    msg.set_content(plain_text)
+    # Plain text fallback
+    msg.set_content(f"Good morning! Check your HTML email view for today's morning, afternoon, and night weather breakdown for {data['city']}.")
 
-    # Rich HTML version
+    # Format periods for HTML
+    periods_html = ""
+    for title, info in data['periods'].items():
+        if info:
+            periods_html += f"""
+            <div style="flex: 1; background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; margin: 4px;">
+                <h3 style="margin: 0 0 8px 0; font-size: 14px; color: #4f46e5;">{title}</h3>
+                <p style="margin: 4px 0; font-size: 18px; font-weight: bold;">{info['temp']}°C</p>
+                <p style="margin: 4px 0; font-size: 12px; color: #64748b;">{info['description']}</p>
+                <p style="margin: 4px 0; font-size: 11px; color: #94a3b8;">Humidity: {info['humidity']}%</p>
+            </div>
+            """
+
     schedule_html_items = "".join([f"<li style='margin-bottom: 8px;'>{event}</li>" for event in data['schedule_events']])
     
     html_content = f"""
@@ -169,11 +203,11 @@ def send_email(data):
             </div>
             <div class="content">
                 <div class="card">
-                    <h2>🌡️ Weather & Environment</h2>
-                    <p><b>Temperature:</b> {data['temp']}°C (Feels like: {data['feels_like']}°C)</p>
-                    <p><b>Condition:</b> {data['description']}</p>
-                    <p><b>Humidity:</b> {data['humidity']}%</p>
-                    <p><b>Air Quality (AQI):</b> {data['aqi_status']}</p>
+                    <h2>🌡️ Weather Breakdown & AQI</h2>
+                    <p style="margin-bottom: 12px;"><b>Air Quality (AQI):</b> {data['aqi_status']}</p>
+                    <div style="display: flex; gap: 8px;">
+                        {periods_html}
+                    </div>
                 </div>
                 
                 <div class="tips-card">
@@ -202,7 +236,7 @@ def send_email(data):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.send_message(msg)
-    print("HTML weather and schedule email sent successfully!")
+    print("HTML weather forecast breakdown email sent successfully!")
 
 if __name__ == "__main__":
     weather_data = get_weather_data()
