@@ -12,8 +12,9 @@ EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY")
 CALENDAR_ICS_URL = os.environ.get("CALENDAR_ICS_URL")
 
-CITY = "Taipei"
-TIMEZONE = ZoneInfo("Asia/Taipei")
+# CHANGE 1: Define a list of cities instead of just one
+CITIES = ["Taipei", "Chiang Mai", "London"] 
+TIMEZONE = ZoneInfo("Asia/Taipei") # Adjust if your primary timezone differs
 
 def get_calendar_events():
     if not CALENDAR_ICS_URL:
@@ -68,7 +69,6 @@ def get_aqi_info(lat, lon):
     return "N/A"
 
 def get_clothing_and_umbrella_tips(periods):
-    # Check if any period mentions rain
     all_desc = " ".join([p["description"].lower() for p in periods.values() if p])
     max_temp = max([p["temp"] for p in periods.values() if p] or [20])
     min_temp = min([p["temp"] for p in periods.values() if p] or [20])
@@ -88,27 +88,23 @@ def get_clothing_and_umbrella_tips(periods):
         
     return umbrella_tip, clothing_tip
 
-def get_weather_data():
-    # Use the 3-hour forecast endpoint
-    url = f"https://api.openweathermap.org/data/2.5/forecast?q={CITY}&appid={WEATHER_API_KEY}&units=metric"
+def get_city_weather(city_name):
+    """Fetches and parses weather data for a single city."""
+    url = f"https://api.openweathermap.org/data/2.5/forecast?q={city_name}&appid={WEATHER_API_KEY}&units=metric"
     response = requests.get(url)
     if response.status_code != 200:
-        raise Exception(f"Failed to fetch weather data: {response.text}")
+        raise Exception(f"Failed to fetch weather data for {city_name}: {response.text}")
     
     data = response.json()
     today = datetime.now(TIMEZONE).date()
     
-    # We need lat/lon from the city data for AQI
     city_info = data.get("city", {})
     coord = city_info.get("coord", {"lat": 25.0330, "lon": 121.5654})
     aqi_status = get_aqi_info(coord["lat"], coord["lon"])
 
-    # Filter forecasts for today and categorize into Morning, Afternoon, Night
     periods = {"Morning": None, "Afternoon": None, "Night": None}
     
     for item in data.get("list", []):
-        dt_utc = datetime.fromtimestamp(item["dt"], tz=timezone.utc if 'timezone' in globals() else None)
-        # Convert UTC timestamp to Taiwan time
         dt_local = datetime.fromtimestamp(item["dt"], tz=ZoneInfo("UTC")).astimezone(TIMEZONE)
         
         if dt_local.date() == today:
@@ -120,7 +116,6 @@ def get_weather_data():
                 "humidity": item["main"]["humidity"]
             }
             
-            # Map hours to blocks (Morning ~09:00, Afternoon ~15:00, Night ~21:00)
             if 6 <= hour <= 11 and periods["Morning"] is None:
                 periods["Morning"] = weather_info
             elif 12 <= hour <= 17 and periods["Afternoon"] is None:
@@ -128,53 +123,67 @@ def get_weather_data():
             elif 18 <= hour <= 23 and periods["Night"] is None:
                 periods["Night"] = weather_info
 
-    # Fallback if specific hour slots weren't caught exact
+    # Fallbacks if exact hour brackets aren't matched
     available_items = [item for item in data.get("list", []) if datetime.fromtimestamp(item["dt"], tz=ZoneInfo("UTC")).astimezone(TIMEZONE).date() == today]
     if not periods["Morning"] and available_items:
-        periods["Morning"] = {"temp": available_items[0]["main"]["temp"], "feels_like": available_items[0]["main"]["feels_like"], "description": available_items[0]["weather"][0]["description"].capitalize(), "humidity": available_items[0]["main"]["humidity"]}
+        periods["Morning"] = {"temp": available_items[0]["main"]["temp"], "description": available_items[0]["weather"][0]["description"].capitalize(), "humidity": available_items[0]["main"]["humidity"]}
     if not periods["Afternoon"] and len(available_items) > 3:
         mid_idx = len(available_items) // 2
-        periods["Afternoon"] = {"temp": available_items[mid_idx]["main"]["temp"], "feels_like": available_items[mid_idx]["main"]["feels_like"], "description": available_items[mid_idx]["weather"][0]["description"].capitalize(), "humidity": available_items[mid_idx]["main"]["humidity"]}
+        periods["Afternoon"] = {"temp": available_items[mid_idx]["main"]["temp"], "description": available_items[mid_idx]["weather"][0]["description"].capitalize(), "humidity": available_items[mid_idx]["main"]["humidity"]}
     if not periods["Night"] and len(available_items) > 6:
-        periods["Night"] = {"temp": available_items[-1]["main"]["temp"], "feels_like": available_items[-1]["main"]["feels_like"], "description": available_items[-1]["weather"][0]["description"].capitalize(), "humidity": available_items[-1]["main"]["humidity"]}
+        periods["Night"] = {"temp": available_items[-1]["main"]["temp"], "description": available_items[-1]["weather"][0]["description"].capitalize(), "humidity": available_items[-1]["main"]["humidity"]}
 
     umbrella_tip, clothing_tip = get_clothing_and_umbrella_tips(periods)
-    schedule_events = get_calendar_events()
-    date_str = datetime.now(TIMEZONE).strftime("%A, %B %d, %Y")
     
     return {
-        "city": CITY,
-        "date_str": date_str,
+        "city": city_name,
         "aqi_status": aqi_status,
         "periods": periods,
         "umbrella_tip": umbrella_tip,
-        "clothing_tip": clothing_tip,
-        "schedule_events": schedule_events
+        "clothing_tip": clothing_tip
     }
 
-def send_email(data):
+def send_email(weather_data_list, schedule_events):
     msg = EmailMessage()
-    msg["Subject"] = f"☀️ Morning Briefing & Schedule for {data['city']} ({data['date_str']})"
+    date_str = datetime.now(TIMEZONE).strftime("%A, %B %d, %Y")
+    primary_city = weather_data_list[0]["city"] if weather_data_list else "Multiple Cities"
+    
+    msg["Subject"] = f"☀️ Morning Briefing & Schedule ({date_str})"
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = EMAIL_ADDRESS
 
-    # Plain text fallback
-    msg.set_content(f"Good morning! Check your HTML email view for today's morning, afternoon, and night weather breakdown for {data['city']}.")
+    msg.set_content("Good morning! Check your HTML email view for today's weather and schedule briefing.")
 
-    # Format periods for HTML
-    periods_html = ""
-    for title, info in data['periods'].items():
-        if info:
-            periods_html += f"""
-            <div style="flex: 1; background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; margin: 4px;">
-                <h3 style="margin: 0 0 8px 0; font-size: 14px; color: #4f46e5;">{title}</h3>
-                <p style="margin: 4px 0; font-size: 18px; font-weight: bold;">{info['temp']}°C</p>
-                <p style="margin: 4px 0; font-size: 12px; color: #64748b;">{info['description']}</p>
-                <p style="margin: 4px 0; font-size: 11px; color: #94a3b8;">Humidity: {info['humidity']}%</p>
+    # Build HTML sections dynamically for each city
+    weather_cards_html = ""
+    for data in weather_data_list:
+        periods_html = ""
+        for title, info in data['periods'].items():
+            if info:
+                periods_html += f"""
+                <div style="flex: 1; background: #ffffff; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; margin: 4px;">
+                    <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #4f46e5;">{title}</h4>
+                    <p style="margin: 4px 0; font-size: 16px; font-weight: bold;">{info['temp']}°C</p>
+                    <p style="margin: 4px 0; font-size: 11px; color: #64748b;">{info['description']}</p>
+                    <p style="margin: 4px 0; font-size: 10px; color: #94a3b8;">Humidity: {info['humidity']}%</p>
+                </div>
+                """
+        
+        weather_cards_html += f"""
+        <div class="card" style="margin-bottom: 20px;">
+            <h2>📍 {data['city']} — Weather & AQI</h2>
+            <p style="margin-bottom: 10px;"><b>Air Quality (AQI):</b> {data['aqi_status']}</p>
+            <div style="display: flex; gap: 6px;">
+                {periods_html}
             </div>
-            """
+            <div style="margin-top: 12px; font-size: 13px; background: #fffbeb; padding: 10px; border-radius: 6px; border-left: 4px solid #f59e0b;">
+                <p style="margin: 2px 0;">{data['umbrella_tip']}</p>
+                <p style="margin: 2px 0;">{data['clothing_tip']}</p>
+            </div>
+        </div>
+        """
 
-    schedule_html_items = "".join([f"<li style='margin-bottom: 8px;'>{event}</li>" for event in data['schedule_events']])
+    schedule_html_items = "".join([f"<li style='margin-bottom: 8px;'>{event}</li>" for event in schedule_events])
     
     html_content = f"""
     <!DOCTYPE html>
@@ -186,10 +195,9 @@ def send_email(data):
             .container {{ max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
             .header {{ background: linear-gradient(135deg, #4f46e5, #3b82f6); color: #ffffff; padding: 28px 24px; text-align: center; }}
             .content {{ padding: 24px; }}
-            .card {{ background: #f8fafc; border-left: 4px solid #3b82f6; padding: 16px; margin-bottom: 16px; border-radius: 6px; }}
-            .tips-card {{ background: #fffbeb; border-left: 4px solid #f59e0b; padding: 16px; margin-bottom: 16px; border-radius: 6px; }}
+            .card {{ background: #f8fafc; border-left: 4px solid #3b82f6; padding: 16px; border-radius: 6px; }}
             .schedule-card {{ background: #f0fdf4; border-left: 4px solid #22c55e; padding: 16px; margin-bottom: 16px; border-radius: 6px; }}
-            h2 {{ margin-top: 0; font-size: 16px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px; }}
+            h2 {{ margin-top: 0; font-size: 15px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px; }}
             ul {{ margin: 0; padding-left: 20px; }}
             .footer {{ text-align: center; font-size: 12px; color: #94a3b8; padding: 16px; border-top: 1px solid #e2e8f0; background: #fafafa; }}
             p {{ margin: 6px 0; font-size: 14px; line-height: 1.5; }}
@@ -199,22 +207,10 @@ def send_email(data):
         <div class="container">
             <div class="header">
                 <h1 style="margin:0; font-size: 24px; font-weight: 700;">☀️ Morning Briefing</h1>
-                <p style="margin: 6px 0 0 0; font-size: 14px; opacity: 0.9;">{data['city']} • {data['date_str']}</p>
+                <p style="margin: 6px 0 0 0; font-size: 14px; opacity: 0.9;">{date_str}</p>
             </div>
             <div class="content">
-                <div class="card">
-                    <h2>🌡️ Weather Breakdown & AQI</h2>
-                    <p style="margin-bottom: 12px;"><b>Air Quality (AQI):</b> {data['aqi_status']}</p>
-                    <div style="display: flex; gap: 8px;">
-                        {periods_html}
-                    </div>
-                </div>
-                
-                <div class="tips-card">
-                    <h2>💡 Daily Tips</h2>
-                    <p>{data['umbrella_tip']}</p>
-                    <p>{data['clothing_tip']}</p>
-                </div>
+                {weather_cards_html}
 
                 <div class="schedule-card">
                     <h2>📅 Today's Schedule</h2>
@@ -236,8 +232,18 @@ def send_email(data):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.send_message(msg)
-    print("HTML weather forecast breakdown email sent successfully!")
+    print("Multi-city weather and schedule briefing email sent successfully!")
 
 if __name__ == "__main__":
-    weather_data = get_weather_data()
-    send_email(weather_data)
+    weather_results = []
+    for city in CITIES:
+        try:
+            weather_results.append(get_city_weather(city))
+        except Exception as e:
+            print(f"Error fetching data for {city}: {e}")
+            
+    calendar_events = get_calendar_events()
+    if weather_results:
+        send_email(weather_results, calendar_events)
+    else:
+        print("No weather data could be fetched for any city.")
