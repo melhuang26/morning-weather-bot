@@ -1,6 +1,3 @@
-run: |
-  python main.py
-  
 name: Daily Morning Briefing
 
 on:
@@ -31,4 +28,6 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           CALENDAR_ICS_URL: ${{ secrets.CALENDAR_ICS_URL }}
-        run: python main.py # Replace with your actual script filename if different
+        run: |
+          ls -la
+          python main.py
