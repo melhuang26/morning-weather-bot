@@ -4,7 +4,7 @@ on:
   schedule:
     # 6:00 AM Taiwan Time (UTC+8) = 10:00 PM UTC (22:00)
     - cron: "0 22 * * *"
-  workflow_dispatch: # Lets you manually trigger a test run from the GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   send-briefing:
@@ -28,6 +28,4 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           CALENDAR_ICS_URL: ${{ secrets.CALENDAR_ICS_URL }}
-        run: |
-          ls -la
-          python main.py
+        run: python main.py
