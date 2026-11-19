@@ -1,5 +1,4 @@
 run: |
-  ls -la
   python main.py
   
 name: Daily Morning Briefing
